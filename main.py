@@ -8,6 +8,7 @@ import sqlite3
 import os
 from flask_cors import CORS
 
+from flask import session
 
 app = Flask(__name__)
 current_directory = os.path.dirname(os.path.abspath(__file__))
@@ -484,5 +485,98 @@ def login():
     else:
         return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
 
+def setup_favorites_table():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS favorites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES eveniment (id) ON DELETE CASCADE,
+            UNIQUE(event_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+@app.route('/favorites', methods=['GET'])
+def get_favorites():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute('''
+            SELECT e.id, e.titlu, e.descriere, e.data, e.ora, e.tip,
+                   l.raion, l.oras, l.strada,
+                   o.nume, o.domeniu
+            FROM favorites f
+            JOIN eveniment e ON f.event_id = e.id
+            JOIN loc l ON e.loc_id = l.id
+            JOIN organizator o ON e.organizator_id = o.id
+        ''')
+        
+        favorites = cur.fetchall()
+        
+        favorites_list = [{
+            'id': fav[0],
+            'titlu': fav[1],
+            'descriere': fav[2],
+            'data': fav[3],
+            'ora': fav[4],
+            'tip': fav[5],
+            'loc': {
+                'raion': fav[6],
+                'oras': fav[7],
+                'strada': fav[8]
+            },
+            'organizator': {
+                'nume': fav[9],
+                'domeniu': fav[10]
+            }
+        } for fav in favorites]
+        
+        return jsonify(favorites_list)
+    
+    except sqlite3.Error as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/favorites/toggle', methods=['POST'])
+def toggle_favorite():
+    data = request.get_json()
+    event_id = data.get('event_id')
+    
+    if not event_id:
+        return jsonify({'status': 'error', 'message': 'Event ID is required'}), 400
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Check if favorite exists
+        cur.execute('SELECT id FROM favorites WHERE event_id = ?', (event_id,))
+        existing = cur.fetchone()
+        
+        if existing:
+            # Remove favorite
+            cur.execute('DELETE FROM favorites WHERE event_id = ?', (event_id,))
+            status = 'removed'
+        else:
+            # Add favorite
+            cur.execute('INSERT INTO favorites (event_id) VALUES (?)', (event_id,))
+            status = 'added'
+        
+        conn.commit()
+        return jsonify({'status': 'success', 'message': f'Favorite {status}'}), 200
+    
+    except sqlite3.Error as e:
+        conn.rollback()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    finally:
+        conn.close()
+
 if __name__ == '__main__':
+    setup_favorites_table()
     app.run(debug=True)
